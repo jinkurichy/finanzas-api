@@ -1,0 +1,14 @@
+{
+  "name": "finanzas-api",
+  "version": "1.0.0",
+  "description": "API REST para Finanzas en Pareja con MySQL en Railway",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "mysql2": "^3.9.7"
+  }
+}
