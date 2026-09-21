@@ -62,10 +62,13 @@ app.post('/api/auth/verify-token', async (req, res) => {
     if (Date.now() > Number(verification.expires_at)) {
       return res.status(400).json({ error: 'El código de seguridad ha caducado.' });
     }
+    
+    // CORREGIDO: el segundo parámetro es 'email' (o verification.email)
     const [result] = await pool.query(
       'INSERT INTO users (name, email, password_hash) VALUES (?, ?, ?)',
-      [verification.user_name, verification.password_hash ? verification.password_hash : verification.user_name, verification.password_hash]
+      [verification.user_name, email, verification.password_hash]
     );
+
     await pool.query('DELETE FROM email_verifications WHERE email = ?', [email]);
     res.json({
       success: true,
