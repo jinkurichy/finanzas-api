@@ -43,7 +43,6 @@ app.post('/api/auth/register', async (req, res) => {
       'INSERT INTO email_verifications (email, token, user_name, password_hash, expires_at) VALUES (?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE token = VALUES(token), user_name = VALUES(user_name), password_hash = VALUES(password_hash), expires_at = VALUES(expires_at)',
       [email, token, name, passwordHash, expiresAt]
     );
-    // En producción se envía por email; aquí devolvemos el token para pruebas inmediatas
     res.json({ success: true, message: 'Token de verificación generado', token });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -63,7 +62,7 @@ app.post('/api/auth/verify-token', async (req, res) => {
       return res.status(400).json({ error: 'El código de seguridad ha caducado.' });
     }
     
-    // CORREGIDO: el segundo parámetro es 'email' (o verification.email)
+    // Correo real en texto plano
     const [result] = await pool.query(
       'INSERT INTO users (name, email, password_hash) VALUES (?, ?, ?)',
       [verification.user_name, email, verification.password_hash]
@@ -139,18 +138,28 @@ app.get('/api/transactions', async (req, res) => {
   }
 });
 
-// 6. Crear una transacción (gasto o ingreso)
+// 6. Crear una transacción (gasto o ingreso) con soporte compartido
 app.post('/api/transactions', async (req, res) => {
-  const { userId, title, amount, category, type, date, note } = req.body;
+  const { userId, title, amount, category, type, date, note, isShared } = req.body;
   try {
     const [userRows] = await pool.query('SELECT partner_id FROM users WHERE id = ?', [userId]);
     const partnerId = userRows.length > 0 ? userRows[0].partner_id : null;
 
-    const [result] = await pool.query(
-      'INSERT INTO transactions (user_id, partner_user_id, title, amount, category, type, date, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-      [userId, partnerId, title, amount, category, type, date || Date.now(), note || '']
-    );
-    res.json({ success: true, id: result.insertId });
+    // Insert flexible (guarda is_shared si existe la columna, o normal si no)
+    try {
+      const [result] = await pool.query(
+        'INSERT INTO transactions (user_id, partner_user_id, is_shared, title, amount, category, type, date, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [userId, partnerId, isShared ? 1 : 0, title, amount, category, type, date || Date.now(), note || '']
+      );
+      return res.json({ success: true, id: result.insertId });
+    } catch (insertErr) {
+      // Fallback si la tabla no tiene is_shared
+      const [result] = await pool.query(
+        'INSERT INTO transactions (user_id, partner_user_id, title, amount, category, type, date, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        [userId, partnerId, title, amount, category, type, date || Date.now(), note || '']
+      );
+      return res.json({ success: true, id: result.insertId });
+    }
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -184,12 +193,53 @@ app.post('/api/pair/link', async (req, res) => {
       return res.status(400).json({ error: 'No puedes emparejarte con tu propia cuenta.' });
     }
 
-    // Vincular bidireccionalmente
+    // Vincular bidireccionalmente en la tabla users
     await pool.query('UPDATE users SET partner_id = ? WHERE id = ?', [partnerId, userId]);
     await pool.query('UPDATE users SET partner_id = ? WHERE id = ?', [userId, partnerId]);
     await pool.query('DELETE FROM pairing_codes WHERE code = ?', [code]);
 
     res.json({ success: true, partnerId });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 9. OBTENER INFORMACIÓN DE LA PAREJA (Requerido por la App Android)
+app.get('/api/pair/partner', async (req, res) => {
+  const userId = req.query.userId;
+  if (!userId) return res.status(400).json({ error: 'Falta el parámetro userId' });
+
+  try {
+    const [userRows] = await pool.query('SELECT partner_id FROM users WHERE id = ?', [userId]);
+    if (userRows.length === 0 || !userRows[0].partner_id) {
+      return res.json({ partner: null });
+    }
+
+    const partnerId = userRows[0].partner_id;
+    const [partnerRows] = await pool.query('SELECT id, name, email FROM users WHERE id = ?', [partnerId]);
+    if (partnerRows.length === 0) {
+      return res.json({ partner: null });
+    }
+
+    res.json({
+      partner: partnerRows[0]
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 10. Desvincular pareja (opcional para cuando se requiera)
+app.post('/api/pair/unlink', async (req, res) => {
+  const { userId } = req.body;
+  try {
+    const [userRows] = await pool.query('SELECT partner_id FROM users WHERE id = ?', [userId]);
+    if (userRows.length > 0 && userRows[0].partner_id) {
+      const partnerId = userRows[0].partner_id;
+      await pool.query('UPDATE users SET partner_id = NULL WHERE id = ?', [userId]);
+      await pool.query('UPDATE users SET partner_id = NULL WHERE id = ?', [partnerId]);
+    }
+    res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
